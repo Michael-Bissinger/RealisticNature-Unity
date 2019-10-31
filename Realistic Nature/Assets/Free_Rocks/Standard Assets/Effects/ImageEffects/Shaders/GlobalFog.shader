@@ -21,7 +21,7 @@ CGINCLUDE
 	// x = start distance
 	uniform float4 _DistanceParams;
 	
-	int4 _SceneFogMode; // x = fog mode, y = use radial flag
+	int _SceneFogMode;
 	float4 _SceneFogParams;
 	#ifndef UNITY_APPLY_FOG
 	half4 unity_FogColor;
@@ -34,12 +34,6 @@ CGINCLUDE
 	uniform float4x4 _FrustumCornersWS;
 	uniform float4 _CameraWS;
 
-	struct appdata_fog
-	{
-		float4 vertex : POSITION;
-		half2 texcoord : TEXCOORD0;
-	};
-
 	struct v2f {
 		float4 pos : SV_POSITION;
 		float2 uv : TEXCOORD0;
@@ -47,9 +41,10 @@ CGINCLUDE
 		float4 interpolatedRay : TEXCOORD2;
 	};
 	
-	v2f vert (appdata_fog v)
+	v2f vert (appdata_img v)
 	{
 		v2f o;
+		half index = v.vertex.z;
 		v.vertex.z = 0.1;
 		o.pos = UnityObjectToClipPos(v.vertex);
 		o.uv = v.texcoord.xy;
@@ -60,9 +55,8 @@ CGINCLUDE
 			o.uv.y = 1-o.uv.y;
 		#endif				
 		
-		int frustumIndex = v.texcoord.x + (2 * o.uv.y);
-		o.interpolatedRay = _FrustumCornersWS[frustumIndex];
-		o.interpolatedRay.w = frustumIndex;
+		o.interpolatedRay = _FrustumCornersWS[(int)index];
+		o.interpolatedRay.w = index;
 		
 		return o;
 	}
@@ -71,17 +65,17 @@ CGINCLUDE
 	half ComputeFogFactor (float coord)
 	{
 		float fogFac = 0.0;
-		if (_SceneFogMode.x == 1) // linear
+		if (_SceneFogMode == 1) // linear
 		{
 			// factor = (end-z)/(end-start) = z * (-1/(end-start)) + (end/(end-start))
 			fogFac = coord * _SceneFogParams.z + _SceneFogParams.w;
 		}
-		if (_SceneFogMode.x == 2) // exp
+		if (_SceneFogMode == 2) // exp
 		{
 			// factor = exp(-density*z)
 			fogFac = _SceneFogParams.y * coord; fogFac = exp2(-fogFac);
 		}
-		if (_SceneFogMode.x == 3) // exp2
+		if (_SceneFogMode == 3) // exp2
 		{
 			// factor = exp(-(density*z)^2)
 			fogFac = _SceneFogParams.x * coord; fogFac = exp2(-fogFac*fogFac);
@@ -90,18 +84,10 @@ CGINCLUDE
 	}
 
 	// Distance-based fog
-	float ComputeDistance (float3 camDir, float zdepth)
+	float ComputeDistance (float3 camDir)
 	{
-		float dist; 
-		if (_SceneFogMode.y == 1)
-			dist = length(camDir);
-		else
-			dist = zdepth * _ProjectionParams.z;
-		// Built-in fog starts at near plane, so match that by
-		// subtracting the near value. Not a perfect approximation
-		// if near plane is very large, but good enough.
-		dist -= _ProjectionParams.y;
-		return dist;
+		float coord = length(camDir);
+		return coord;
 	}
 
 	// Linear half-space fog, from https://www.terathon.com/lengyel/Lengyel-UnifiedFog.pdf
@@ -126,11 +112,11 @@ CGINCLUDE
 
 	half4 ComputeFog (v2f i, bool distance, bool height) : SV_Target
 	{
-		half4 sceneColor = tex2D(_MainTex, UnityStereoTransformScreenSpaceTex(i.uv));
+		half4 sceneColor = tex2D(_MainTex, i.uv);
 		
 		// Reconstruct world space position & direction
 		// towards this screen pixel.
-		float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, UnityStereoTransformScreenSpaceTex(i.uv_depth));
+		float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,i.uv_depth);
 		float dpth = Linear01Depth(rawDepth);
 		float4 wsDir = dpth * i.interpolatedRay;
 		float4 wsPos = _CameraWS + wsDir;
@@ -138,14 +124,14 @@ CGINCLUDE
 		// Compute fog distance
 		float g = _DistanceParams.x;
 		if (distance)
-			g += ComputeDistance (wsDir, dpth);
+			g += ComputeDistance (wsDir);
 		if (height)
 			g += ComputeHalfSpace (wsDir);
 
 		// Compute fog amount
 		half fogFac = ComputeFogFactor (max(0.0,g));
 		// Do not fog skybox
-		if (dpth == _DistanceParams.y)
+		if (rawDepth >= 0.999999)
 			fogFac = 1.0;
 		//return fogFac; // for debugging
 		
